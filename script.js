@@ -139,6 +139,38 @@ function updateAllCardPrices() {
   });
 }
 
+/**
+ * Atualiza preços exibidos na página de detalhe do jogo (gameView).
+ */
+function updateGameViewPrices() {
+  if (!els.gameView || !state.currentGameDeal) return;
+
+  const sale = parseFloat(state.currentGameDeal.salePrice || '0');
+  const convEl = els.gameView.querySelector('[data-game-converted]');
+  const saleEl = els.gameView.querySelector('[data-game-sale]');
+
+  if (!saleEl) return;
+
+  // Atualiza o preço exibido em USD (sempre mostrar)
+  saleEl.textContent = formatPrice(sale);
+
+  // Se for USD ou preço zero, esconde convertido
+  if (fx.current === 'USD' || sale === 0) {
+    if (convEl) convEl.style.display = 'none';
+    return;
+  }
+
+  const rate = fx.rates[fx.current] || 1;
+  const converted = sale * rate;
+  const { locale, symbol, flag } = CURRENCIES[fx.current];
+  const formatted = `${flag} ${symbol} ${converted.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  if (convEl) {
+    convEl.textContent = formatted;
+    convEl.style.display = '';
+  }
+}
+
 /** Troca a moeda ativa, busca a cotação e atualiza todos os cards. */
 async function switchCurrency(currency) {
   if (fx.loading) return;
@@ -154,6 +186,7 @@ async function switchCurrency(currency) {
   if (currency === 'USD') {
     rateEl.textContent = '';
     updateAllCardPrices();
+    updateGameViewPrices();
     fx.loading = false;
     return;
   }
@@ -172,6 +205,7 @@ async function switchCurrency(currency) {
   setTimeout(() => rateEl.classList.remove('flash'), 1500);
 
   updateAllCardPrices();
+  updateGameViewPrices();
   fx.loading = false;
 }
 
@@ -187,11 +221,12 @@ const state = {
   query:       '',        // termo de pesquisa atual
   sort:        'deal',    // critério de ordenação ativo
   deals:       [],        // todos os deals carregados
-  page:        0,         // página atual
-  totalDeals:  null,      // total de ofertas (obtido do header)
-  loading:     false,     // flag de carregamento
-  lastQuery:   null,      // última query executada (para retry)
-  hasMore:     true,      // se há mais páginas disponíveis
+  page:             0,         // página atual
+  totalDeals:       null,      // total de ofertas (obtido do header)
+  loading:          false,     // flag de carregamento
+  lastQuery:        null,      // última query executada (para retry)
+  hasMore:          true,      // se há mais páginas disponíveis
+  currentGameDeal:  null,      // jogo exibido na página dinâmica
 };
 
 /* ============================================================
@@ -222,6 +257,12 @@ const els = {
   nextBtn:        $('nextBtn'),
   pageInfo:       $('pageInfo'),
   logo:           document.querySelector('.logo'),
+  gameView:       $('gameView'),
+  metaDescription:$('metaDescription'),
+  ogTitle:        $('ogTitle'),
+  ogDescription:  $('ogDescription'),
+  ogImage:        $('ogImage'),
+  canonicalLink:  $('canonicalLink'),
 };
 
 /* ============================================================
@@ -303,6 +344,50 @@ function buildUrl(query, page, sortBy) {
   return `${DEALS_URL}?${params.toString()}`;
 }
 
+/**
+ * Cria um slug SEO-friendly para o título do jogo.
+ * Ex: "Cyberpunk 2077" → "cyberpunk-2077"
+ */
+function slugify(text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, ' e ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function slugMatchesTitle(slug, title) {
+  const normalized = slugify(title);
+  if (normalized === slug) return true;
+  if (normalized.includes(slug)) return true;
+  const parts = slug.split('-').filter(Boolean);
+  return parts.every(part => normalized.includes(part));
+}
+
+function updateMetaTags(deal) {
+  if (!deal) return;
+  const slug = slugify(deal.title);
+  const url = `${window.location.origin}/game/${slug}`;
+
+  document.title = `${deal.title} — SteamTrackDB`;
+  if (els.metaDescription) els.metaDescription.content = `Página de ${deal.title} com preço atual e ofertas da Steam.`;
+  if (els.ogTitle) els.ogTitle.content = `${deal.title} — SteamTrackDB`;
+  if (els.ogDescription) els.ogDescription.content = `Compare preço e veja histórico de ${deal.title} na Steam.`;
+  if (els.ogImage) els.ogImage.content = getImageUrl(deal);
+  if (els.canonicalLink) els.canonicalLink.href = url;
+}
+
+function resetMetaTags() {
+  document.title = 'SteamTrack — Rastreador de Preços Steam';
+  if (els.metaDescription) els.metaDescription.content = 'Encontre os melhores preços da Steam em tempo real. Compare ofertas, histórico de preços e economize em jogos.';
+  if (els.ogTitle) els.ogTitle.content = 'SteamTrack — Rastreador de Preços Steam';
+  if (els.ogDescription) els.ogDescription.content = 'Encontre os melhores preços da Steam em tempo real.';
+  if (els.ogImage) els.ogImage.content = '';
+  if (els.canonicalLink) els.canonicalLink.href = window.location.origin;
+}
+
 /* ============================================================
    GERENCIAMENTO DE ESTADOS DA UI
    ============================================================ */
@@ -330,13 +415,166 @@ function resetToHome() {
   state.page = 0;
   state.sort = 'rating';
   state.deals = [];
+  state.currentGameDeal = null;
   state.hasMore = true;
   els.searchInput.value = '';
   els.gamesGrid.innerHTML = '';
   els.controlsBar.style.display = 'none';
   els.loadMoreWrapper.style.display = 'none';
+  els.gameView.style.display = 'none';
+  els.gamesGrid.style.display = '';
+  resetMetaTags();
   showState('heroState');
   loadTopDeals();
+}
+
+function showGameView() {
+  els.gameView.style.display = 'block';
+  els.gamesGrid.style.display = 'none';
+  els.controlsBar.style.display = 'none';
+  els.loadMoreWrapper.style.display = 'none';
+  ['heroState', 'loadingState', 'errorState', 'emptyState'].forEach(id => {
+    els[id].style.display = 'none';
+  });
+  // Garantir que a página abra no topo ao mostrar a view do jogo.
+  // Executar após render para evitar saltos de layout causados por imagens/carregamento.
+  requestAnimationFrame(() => {
+    try {
+      if (els.gameView.scrollIntoView) {
+        els.gameView.scrollIntoView({ block: 'start', behavior: 'auto' });
+      }
+      window.scrollTo(0, 0);
+    } catch (e) {
+      try { window.scrollTo(0, 0); } catch (err) {}
+    }
+  });
+}
+
+function showHomeView() {
+  els.gameView.style.display = 'none';
+  els.gamesGrid.style.display = '';
+  els.controlsBar.style.display = '';
+  resetMetaTags();
+  // Voltar ao topo quando retornar à home
+  requestAnimationFrame(() => {
+    try {
+      window.scrollTo(0, 0);
+    } catch (e) {}
+  });
+}
+
+async function fetchDealBySlug(slug) {
+  const query = decodeURIComponent(slug.replace(/-/g, ' '));
+  const response = await fetch(buildUrl(query, 0, 'rating'));
+  if (!response.ok) return null;
+  const deals = await response.json();
+  if (!deals || deals.length === 0) return null;
+  return deals.find(deal => slugMatchesTitle(slug, deal.title)) || deals[0];
+}
+
+async function fetchGameInfo(deal) {
+  if (!deal || !deal.gameID) return null;
+  try {
+    const res = await fetch(`${API_BASE}/games?id=${deal.gameID}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function renderGameDetail(deal, gameInfo) {
+  state.currentGameDeal = deal;
+
+  const savings = parseFloat(deal.savings);
+  const salePrice = parseFloat(deal.salePrice);
+  const normalPrice = parseFloat(deal.normalPrice);
+  const isFree = salePrice === 0;
+  const hasDiscount = savings > 0;
+
+  const description = gameInfo?.info?.about_the_game || gameInfo?.info?.short_description || '';
+  const platforms = (gameInfo?.info?.platforms || []).join(', ') || 'Steam';
+  const headerUrl = getImageUrl(deal);
+
+  els.gameView.innerHTML = `
+    <section class="game-page">
+      <div class="game-page-head">
+        <a class="nav-btn" href="/" data-route title="Voltar para a página inicial">&#8592; Voltar</a>
+      </div>
+
+      
+
+      <div class="game-page-grid">
+        <div class="game-page-cover">
+          <img src="${headerUrl}" alt="${deal.title}" loading="lazy"
+            onerror="this.closest('.game-page-cover').style.display='none'" />
+        </div>
+        <div class="game-page-info">
+          <h1>${deal.title}</h1>
+
+          <div class="game-page-tags">
+            <span class="game-page-tag">Steam</span>
+            ${platforms ? platforms.split(', ').map(function(p) { return '<span class="game-page-tag">' + p + '</span>'; }).join('') : ''}
+            ${deal.metacriticScore > 0 ? '<span class="game-page-tag">MC ' + deal.metacriticScore + '</span>' : ''}
+          </div>
+
+          ${hasDiscount && !isFree ? '<div class="game-page-discount-badge">-' + Math.round(savings) + '% OFF</div>' : ''}
+          ${isFree ? '<div class="game-page-discount-badge">GR&#193;TIS</div>' : ''}
+
+          <div class="game-page-price">
+            <span class="price-sale" data-game-sale>${formatPrice(salePrice)}</span>
+            ${hasDiscount && !isFree ? '<span class="price-original">' + formatPrice(normalPrice) + '</span>' : ''}
+            <span class="game-page-converted" data-game-converted style="display:none;"></span>
+          </div>
+
+          <div class="game-page-actions">
+            <a class="btn-steam-large" href="${getDealUrl(deal.dealID)}" target="_blank" rel="noopener noreferrer">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.718L.22 15.06C1.429 20.188 6.222 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.606 0 11.979 0z"/></svg>
+              Ver na Steam
+            </a>
+            <button class="btn-history" data-history-page>Ver Hist&#243;rico de Pre&#231;os</button>
+          </div>
+
+          ${description ? '<div class="game-page-description"><h2>Sobre o jogo</h2><p>' + description.replace(/<[^>]*>/g, '') + '</p></div>' : ''}
+        </div>
+      </div>
+    </section>
+  `;
+
+  showGameView();
+  updateGameViewPrices();
+}
+
+function renderGameNotFound(slug) {
+  els.gameView.innerHTML = `
+    <section class="game-page game-not-found">
+      <div class="game-page-head">
+        <a class="nav-btn" href="/" data-route title="Voltar para a página inicial">← Voltar</a>
+      </div>
+      <div class="game-not-found-card">
+        <h1>Jogo não encontrado</h1>
+        <p>Não foi possível encontrar a página para <strong>${slug}</strong>. Tente pesquisar outro título.</p>
+      </div>
+    </section>
+  `;
+  showGameView();
+}
+
+async function renderGameRoute(slug) {
+  if (!slug) {
+    resetToHome();
+    return;
+  }
+
+  const deal = await fetchDealBySlug(slug);
+  if (!deal) {
+    renderGameNotFound(slug);
+    return;
+  }
+
+  const gameInfo = await fetchGameInfo(deal);
+  updateMetaTags(deal);
+  renderGameDetail(deal, gameInfo);
 }
 
 /* ============================================================
@@ -398,7 +636,10 @@ function createCard(deal) {
   }
 
   /* Título */
-  card.querySelector('[data-title]').textContent = deal.title || 'Título desconhecido';
+  const titleEl = card.querySelector('[data-title]');
+  const slug = slugify(deal.title);
+  titleEl.innerHTML = `<a class="card-link" href="/game/${slug}" data-route>${deal.title || 'Título desconhecido'}</a>`;
+  card.dataset.slug = slug;
 
   /* Preços */
   const originalEl = card.querySelector('[data-original]');
@@ -998,6 +1239,12 @@ els.gamesGrid.addEventListener('click', e => {
   if (index !== -1 && state.deals[index]) {
     openHistoryModal(state.deals[index]);
   }
+});
+
+els.gameView.addEventListener('click', e => {
+  const histBtn = e.target.closest('[data-history-page]');
+  if (!histBtn || !state.currentGameDeal) return;
+  openHistoryModal(state.currentGameDeal);
 });
 
 /* Inicia contador de ofertas */

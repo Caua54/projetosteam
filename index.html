@@ -4,6 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SteamTrack — Rastreador de Preços Steam</title>
+  <!-- SEO: dynamic meta tags (updated by router.js) -->
+  <meta name="description" id="metaDescription" content="Encontre os melhores preços da Steam em tempo real. Compare ofertas, histórico de preços e economize em jogos.">
+  <meta property="og:title" id="ogTitle" content="SteamTrack — Rastreador de Preços Steam">
+  <meta property="og:description" id="ogDescription" content="Encontre os melhores preços da Steam em tempo real.">
+  <meta property="og:image" id="ogImage" content="">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="canonical" id="canonicalLink" href="">
   <link rel="stylesheet" href="style.css" />
   <!-- Fontes: Orbitron para display, JetBrains Mono para dados -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -254,6 +262,9 @@
     <!-- Grade de cards de jogos -->
     <div class="games-grid" id="gamesGrid"></div>
 
+    <!-- ===== GAME PAGE VIEW (dynamic routing) ===== -->
+    <div id="gameView" class="game-view" style="display:none;" aria-live="polite"></div>
+
     <!-- Botão carregar mais -->
     <div class="load-more-wrapper" id="loadMoreWrapper" style="display:none;">
       <button class="load-more-btn" id="loadMoreBtn">
@@ -326,8 +337,8 @@
       </div>
     </article>
   </template>
-
   <script src="script.js"></script>
+  <script src="router.js"></script>
   <script defer src="/_vercel/speed-insights/script.js"></script>
 </body>
 </html>
