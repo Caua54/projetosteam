@@ -25,6 +25,162 @@ const PAGE_SIZE = 12;
 const REDIRECT_URL = 'https://www.cheapshark.com/redirect?dealID=';
 
 /* ============================================================
+   SISTEMA DE MOEDA E CÂMBIO
+   Tenta 3 APIs em sequência para garantir cotação real do dia.
+   Todos os preços chegam em USD — multiplica pelo rate ao vivo.
+   Ex: $20 USD × 5.72 = R$ 114,40
+   ============================================================ */
+
+const CURRENCIES = {
+  USD: { flag: '🇺🇸', symbol: '$',  locale: 'en-US' },
+  BRL: { flag: '🇧🇷', symbol: 'R$', locale: 'pt-BR' },
+  EUR: { flag: '🇪🇺', symbol: '€',  locale: 'de-DE' },
+  GBP: { flag: '🇬🇧', symbol: '£',  locale: 'en-GB' },
+};
+
+const fx = {
+  current: 'USD',
+  rates:   { USD: 1 },
+  loading: false,
+};
+
+/**
+ * Busca a cotação real de USD para a moeda alvo.
+ * Tenta 3 APIs públicas gratuitas em sequência.
+ * Se todas falharem usa valores de fallback aproximados.
+ */
+async function fetchRate(currency) {
+  if (currency === 'USD') return 1;
+  if (fx.rates[currency]) return fx.rates[currency]; // cache — não rebusca
+
+  const FALLBACK = { BRL: 5.72, EUR: 0.92, GBP: 0.79 };
+
+  // API 1: open.er-api.com — simples, sem chave, muito confiável
+  try {
+    const res = await fetch('https://open.er-api.com/v6/latest/USD',
+      { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.result === 'success' && data.rates?.[currency]) {
+        const rate = data.rates[currency];
+        fx.rates[currency] = rate;
+        console.log(`[FX] open.er-api ✓  1 USD = ${rate} ${currency}`);
+        return rate;
+      }
+    }
+  } catch { /* próxima */ }
+
+  // API 2: Frankfurter (Banco Central Europeu)
+  try {
+    const res = await fetch(
+      `https://api.frankfurter.app/latest?from=USD&to=${currency}`,
+      { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.rates?.[currency]) {
+        const rate = data.rates[currency];
+        fx.rates[currency] = rate;
+        console.log(`[FX] frankfurter ✓  1 USD = ${rate} ${currency}`);
+        return rate;
+      }
+    }
+  } catch { /* próxima */ }
+
+  // API 3: ExchangeRate.host
+  try {
+    const res = await fetch(
+      `https://api.exchangerate.host/latest?base=USD&symbols=${currency}`,
+      { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.rates?.[currency]) {
+        const rate = data.rates[currency];
+        fx.rates[currency] = rate;
+        console.log(`[FX] exchangerate.host ✓  1 USD = ${rate} ${currency}`);
+        return rate;
+      }
+    }
+  } catch { /* fallback */ }
+
+  // Fallback fixo com aviso no console
+  const rate = FALLBACK[currency] || 1;
+  fx.rates[currency] = rate;
+  console.warn(`[FX] Todas as APIs falharam. Fallback: 1 USD ≈ ${rate} ${currency}`);
+  return rate;
+}
+
+/** Recalcula e exibe o preço convertido em todos os cards visíveis. */
+function updateAllCardPrices() {
+  const isUSD = fx.current === 'USD';
+  const { flag, symbol, locale } = CURRENCIES[fx.current];
+  const rate = fx.rates[fx.current] || 1;
+
+  document.querySelectorAll('.game-card').forEach(card => {
+    const wrap = card.querySelector('[data-converted-wrap]');
+    if (!wrap) return;
+
+    const usdSale = parseFloat(card.dataset.usdSale || '0');
+
+    if (isUSD || isNaN(usdSale) || usdSale === 0) {
+      wrap.style.display = 'none';
+      return;
+    }
+
+    const converted = usdSale * rate;
+    const formatted = `${symbol} ${converted.toLocaleString(locale, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+
+    card.querySelector('[data-converted-flag]').textContent  = flag;
+    card.querySelector('[data-converted-val]').textContent   = formatted;
+    card.querySelector('[data-converted-label]').textContent = fx.current;
+    wrap.style.display = 'flex';
+  });
+}
+
+/** Troca a moeda ativa, busca a cotação e atualiza todos os cards. */
+async function switchCurrency(currency) {
+  if (fx.loading) return;
+  fx.loading = true;
+
+  document.querySelectorAll('.currency-pill').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.currency === currency);
+  });
+
+  fx.current = currency;
+  const rateEl = document.getElementById('currencyRate');
+
+  if (currency === 'USD') {
+    rateEl.textContent = '';
+    updateAllCardPrices();
+    fx.loading = false;
+    return;
+  }
+
+  rateEl.textContent = 'buscando cotação...';
+  rateEl.classList.remove('flash');
+
+  const rate = await fetchRate(currency);
+
+  rateEl.textContent = `1 USD = ${rate.toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  })} ${currency}`;
+
+  rateEl.classList.add('flash');
+  setTimeout(() => rateEl.classList.remove('flash'), 1500);
+
+  updateAllCardPrices();
+  fx.loading = false;
+}
+
+// Eventos dos botões de moeda
+document.querySelectorAll('.currency-pill').forEach(btn => {
+  btn.addEventListener('click', () => switchCurrency(btn.dataset.currency));
+});
+
+/* ============================================================
    ESTADO DA APLICAÇÃO
    ============================================================ */
 const state = {
@@ -62,8 +218,10 @@ const els = {
   cardTemplate:   $('cardTemplate'),
   navControls:    $('navControls'),
   prevBtn:        $('prevBtn'),
+  homeBtn:        $('homeBtn'),
   nextBtn:        $('nextBtn'),
   pageInfo:       $('pageInfo'),
+  logo:           document.querySelector('.logo'),
 };
 
 /* ============================================================
@@ -164,6 +322,23 @@ function showError(msg) {
   els.loadMoreWrapper.style.display = 'none';
 }
 
+/**
+ * Retorna à tela inicial, limpa o campo de busca e carrega os destaques.
+ */
+function resetToHome() {
+  state.query = '';
+  state.page = 0;
+  state.sort = 'rating';
+  state.deals = [];
+  state.hasMore = true;
+  els.searchInput.value = '';
+  els.gamesGrid.innerHTML = '';
+  els.controlsBar.style.display = 'none';
+  els.loadMoreWrapper.style.display = 'none';
+  showState('heroState');
+  loadTopDeals();
+}
+
 /* ============================================================
    CRIAÇÃO DE CARDS
    ============================================================ */
@@ -254,6 +429,24 @@ function createCard(deal) {
   /* Botão Steam */
   const btnSteam = card.querySelector('[data-link]');
   btnSteam.href = getDealUrl(deal.dealID);
+
+  /* Guarda o preço USD no dataset do card para a conversão de moeda */
+  card.dataset.usdSale = salePrice;
+
+  /* Preenche o bloco de preço convertido se a moeda não for USD */
+  const convertedWrap = card.querySelector('[data-converted-wrap]');
+  if (convertedWrap && fx.current !== 'USD' && !isFree && salePrice > 0) {
+    const rate = fx.rates[fx.current] || 1;
+    const converted = salePrice * rate;
+    const { locale, symbol, flag } = CURRENCIES[fx.current];
+    const formatted = `${symbol} ${converted.toLocaleString(locale, {
+      minimumFractionDigits: 2, maximumFractionDigits: 2,
+    })}`;
+    card.querySelector('[data-converted-flag]').textContent  = CURRENCIES[fx.current].flag;
+    card.querySelector('[data-converted-val]').textContent   = formatted;
+    card.querySelector('[data-converted-label]').textContent = fx.current;
+    convertedWrap.style.display = 'flex';
+  }
 
   /* Botão copiar link */
   const btnCopy = card.querySelector('[data-copy]');
@@ -522,6 +715,14 @@ els.loadMoreBtn.addEventListener('click', () => {
     sort:   state.sort,
   });
 });
+
+if (els.homeBtn) {
+  els.homeBtn.addEventListener('click', resetToHome);
+}
+
+if (els.logo) {
+  els.logo.addEventListener('click', resetToHome);
+}
 
 /* -- Botões de navegação -- */
 els.prevBtn.addEventListener('click', () => {

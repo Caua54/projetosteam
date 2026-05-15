@@ -63,12 +63,38 @@
         </div>
       </div>
 
-      <!-- Stats do sistema -->
-      <div class="header-stats">
-        <div class="stat">
-          <span class="stat-value" id="totalDeals">—</span>
-          <span class="stat-label">ofertas ativas</span>
+      <!-- Seletor de moeda + Stats -->
+      <div class="header-right">
+
+        <!-- Seletor de moeda -->
+        <div class="currency-selector">
+          <span class="currency-label">moeda</span>
+          <div class="currency-pills">
+            <button class="currency-pill active" data-currency="USD">
+              <span class="pill-flag">🇺🇸</span><span>USD</span>
+            </button>
+            <button class="currency-pill" data-currency="BRL">
+              <span class="pill-flag">🇧🇷</span><span>BRL</span>
+            </button>
+            <button class="currency-pill" data-currency="EUR">
+              <span class="pill-flag">🇪🇺</span><span>EUR</span>
+            </button>
+            <button class="currency-pill" data-currency="GBP">
+              <span class="pill-flag">🇬🇧</span><span>GBP</span>
+            </button>
+          </div>
+          <!-- Cotação atual exibida abaixo das pills -->
+          <span class="currency-rate" id="currencyRate"></span>
         </div>
+
+        <!-- Stats do sistema -->
+        <div class="header-stats">
+          <div class="stat">
+            <span class="stat-value" id="totalDeals">—</span>
+            <span class="stat-label">ofertas ativas</span>
+          </div>
+        </div>
+
       </div>
 
     </div>
@@ -100,6 +126,9 @@
       </div>
       <!-- Controles de navegação -->
       <div class="nav-controls" id="navControls" style="display:none;">
+        <button class="nav-btn" id="homeBtn" title="Voltar ao início">
+          <span>Início</span>
+        </button>
         <button class="nav-btn" id="prevBtn" title="Página anterior" disabled>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M15 18l-6-6 6-6"/>
@@ -261,10 +290,16 @@
       <!-- Corpo do card -->
       <div class="card-body">
         <h3 class="card-title" data-title></h3>
-        <!-- Preços -->
+        <!-- Preços em USD -->
         <div class="card-prices">
           <span class="price-original" data-original></span>
           <span class="price-sale" data-sale></span>
+        </div>
+        <!-- Preço convertido na moeda selecionada (oculto quando USD) -->
+        <div class="price-converted" data-converted-wrap style="display:none;">
+          <span class="converted-flag" data-converted-flag></span>
+          <span class="converted-val" data-converted-val></span>
+          <span class="converted-label" data-converted-label></span>
         </div>
         <!-- Store info -->
         <div class="card-meta">
