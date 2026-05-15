@@ -1,0 +1,21 @@
+{
+  "name": "steamtrackdb",
+  "version": "1.0.0",
+  "description": "Steam price tracker using CheapShark API",
+  "type": "module",
+  "scripts": {
+    "dev": "npx serve .",
+    "build": "echo 'No build step needed for vanilla JS'",
+    "lint": "echo 'No linter configured'"
+  },
+  "keywords": [
+    "steam",
+    "price-tracker",
+    "cheapshark"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@vercel/analytics": "^2.0.1"
+  }
+}
