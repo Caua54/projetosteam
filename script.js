@@ -1,0 +1,803 @@
+/**
+ * VaultDB — Steam Price Tracker
+ * Consome a CheapShark API para exibir preços e ofertas de jogos da Steam.
+ * Docs da API: https://apidocs.cheapshark.com/
+ */
+
+'use strict';
+
+/* ============================================================
+   CONSTANTES E CONFIGURAÇÃO
+   ============================================================ */
+
+/** ID da loja Steam na CheapShark */
+const STEAM_STORE_ID = '1';
+
+/** Endpoints da CheapShark */
+const API_BASE   = 'https://www.cheapshark.com/api/1.0';
+const DEALS_URL  = `${API_BASE}/deals`;
+const GAMES_URL  = `${API_BASE}/games`;
+
+/** Limite de resultados por página */
+const PAGE_SIZE = 12;
+
+/** URL base para redirecionar para a Steam via CheapShark */
+const REDIRECT_URL = 'https://www.cheapshark.com/redirect?dealID=';
+
+/* ============================================================
+   ESTADO DA APLICAÇÃO
+   ============================================================ */
+const state = {
+  query:       '',        // termo de pesquisa atual
+  sort:        'deal',    // critério de ordenação ativo
+  deals:       [],        // todos os deals carregados
+  page:        0,         // página atual
+  totalDeals:  null,      // total de ofertas (obtido do header)
+  loading:     false,     // flag de carregamento
+  lastQuery:   null,      // última query executada (para retry)
+  hasMore:     true,      // se há mais páginas disponíveis
+};
+
+/* ============================================================
+   ELEMENTOS DO DOM
+   ============================================================ */
+const $ = id => document.getElementById(id);
+
+const els = {
+  searchInput:    $('searchInput'),
+  searchBtn:      $('searchBtn'),
+  gamesGrid:      $('gamesGrid'),
+  heroState:      $('heroState'),
+  loadingState:   $('loadingState'),
+  errorState:     $('errorState'),
+  errorMsg:       $('errorMsg'),
+  emptyState:     $('emptyState'),
+  controlsBar:    $('controlsBar'),
+  resultsCount:   $('resultsCount'),
+  resultsQuery:   $('resultsQuery'),
+  loadMoreWrapper:$('loadMoreWrapper'),
+  loadMoreBtn:    $('loadMoreBtn'),
+  retryBtn:       $('retryBtn'),
+  totalDeals:     $('totalDeals'),
+  cardTemplate:   $('cardTemplate'),
+  navControls:    $('navControls'),
+  prevBtn:        $('prevBtn'),
+  nextBtn:        $('nextBtn'),
+  pageInfo:       $('pageInfo'),
+};
+
+/* ============================================================
+   FUNÇÕES AUXILIARES
+   ============================================================ */
+
+/**
+ * Formata um número como preço em dólar.
+ * @param {string|number} val
+ * @returns {string} — ex.: "$4.99"
+ */
+function formatPrice(val) {
+  const num = parseFloat(val);
+  if (isNaN(num)) return '—';
+  if (num === 0) return 'GRÁTIS';
+  return `$${num.toFixed(2)}`;
+}
+
+/**
+ * Retorna a URL da imagem do jogo via Steam CDN.
+ * Usa o steamAppID quando disponível.
+ * @param {object} deal
+ * @returns {string}
+ */
+function getImageUrl(deal) {
+  if (deal.steamAppID) {
+    return `https://cdn.cloudflare.steamstatic.com/steam/apps/${deal.steamAppID}/header.jpg`;
+  }
+  if (deal.thumb) return deal.thumb;
+  return '';
+}
+
+/**
+ * Retorna a URL de redirect da CheapShark para a oferta.
+ * @param {string} dealID
+ * @returns {string}
+ */
+function getDealUrl(dealID) {
+  return `${REDIRECT_URL}${dealID}`;
+}
+
+/**
+ * Classifica score do Metacritic em boa/média/ruim.
+ * @param {number} score
+ * @returns {string}
+ */
+function scoreClass(score) {
+  if (score >= 75) return 'score-good';
+  if (score >= 50) return 'score-ok';
+  return 'score-bad';
+}
+
+/**
+ * Constrói a query string da CheapShark.
+ * @param {string} query   — título a buscar
+ * @param {number} page    — página (0-indexed)
+ * @param {string} sortBy  — critério de ordenação
+ * @returns {string}
+ */
+function buildUrl(query, page, sortBy) {
+  const sortMap = {
+    deal:    { sortBy: 'DealRating',     desc: 1 },
+    price:   { sortBy: 'Price',          desc: 0 },
+    savings: { sortBy: 'Savings',        desc: 1 },
+    rating:  { sortBy: 'Metacritic',     desc: 1 },
+  };
+
+  const sort = sortMap[sortBy] || sortMap.deal;
+  const params = new URLSearchParams({
+    storeID:    STEAM_STORE_ID,
+    title:      query,
+    pageNumber: page,
+    pageSize:   PAGE_SIZE,
+    sortBy:     sort.sortBy,
+    desc:       sort.desc,
+    onSale:     0,    // 0 = inclui todos (não só em promoção)
+  });
+
+  return `${DEALS_URL}?${params.toString()}`;
+}
+
+/* ============================================================
+   GERENCIAMENTO DE ESTADOS DA UI
+   ============================================================ */
+
+/** Oculta todos os estados e mostra apenas o solicitado. */
+function showState(name) {
+  ['heroState', 'loadingState', 'errorState', 'emptyState'].forEach(id => {
+    els[id].style.display = id === name ? '' : 'none';
+  });
+}
+
+/** Exibe a mensagem de erro com texto customizado. */
+function showError(msg) {
+  els.errorMsg.textContent = msg;
+  showState('errorState');
+  els.controlsBar.style.display = 'none';
+  els.loadMoreWrapper.style.display = 'none';
+}
+
+/* ============================================================
+   CRIAÇÃO DE CARDS
+   ============================================================ */
+
+/**
+ * Cria e retorna um elemento de card a partir do template HTML.
+ * @param {object} deal — objeto de oferta da CheapShark API
+ * @returns {HTMLElement}
+ */
+function createCard(deal) {
+  const tpl   = els.cardTemplate.content.cloneNode(true);
+  const card  = tpl.querySelector('.game-card');
+
+  const savings = parseFloat(deal.savings);
+  const salePrice = parseFloat(deal.salePrice);
+  const normalPrice = parseFloat(deal.normalPrice);
+  const isFree = salePrice === 0;
+  const hasDiscount = savings > 0;
+
+  /* Badge de desconto */
+  const badge = card.querySelector('[data-badge]');
+  if (isFree) {
+    badge.textContent = 'GRÁTIS';
+    badge.dataset.free = '';
+  } else if (hasDiscount) {
+    badge.textContent = `-${Math.round(savings)}%`;
+  } else {
+    badge.remove();
+  }
+
+  /* Imagem */
+  const img = card.querySelector('[data-img]');
+  const imgUrl = getImageUrl(deal);
+  if (imgUrl) {
+    img.src = imgUrl;
+    img.alt = deal.title || 'Capa do jogo';
+    img.onerror = () => {
+      // Fallback: tenta o thumb original
+      if (img.src !== deal.thumb && deal.thumb) {
+        img.src = deal.thumb;
+      } else {
+        img.closest('.card-img-wrap').style.background = '#0d1117';
+        img.style.display = 'none';
+      }
+    };
+  } else {
+    img.style.display = 'none';
+  }
+
+  /* Score Metacritic */
+  const score = parseInt(deal.metacriticScore, 10);
+  const scoreEl = card.querySelector('[data-score]');
+  if (score > 0) {
+    scoreEl.style.display = '';
+    scoreEl.classList.add(scoreClass(score));
+    card.querySelector('[data-score-val]').textContent = score;
+  }
+
+  /* Título */
+  card.querySelector('[data-title]').textContent = deal.title || 'Título desconhecido';
+
+  /* Preços */
+  const originalEl = card.querySelector('[data-original]');
+  const saleEl     = card.querySelector('[data-sale]');
+
+  if (hasDiscount && !isFree) {
+    originalEl.textContent = formatPrice(normalPrice);
+    saleEl.textContent = formatPrice(salePrice);
+  } else if (isFree) {
+    originalEl.textContent = normalPrice > 0 ? formatPrice(normalPrice) : '';
+    saleEl.textContent = 'GRÁTIS';
+    saleEl.classList.add('is-free');
+  } else {
+    originalEl.textContent = '';
+    saleEl.textContent = formatPrice(salePrice);
+  }
+
+  /* Meta: store + economia */
+  card.querySelector('[data-store]').textContent = 'Steam';
+  const savingsEl = card.querySelector('[data-savings]');
+  if (hasDiscount && normalPrice > 0) {
+    const saved = normalPrice - salePrice;
+    savingsEl.textContent = `economia de $${saved.toFixed(2)}`;
+  } else {
+    savingsEl.textContent = isFree ? 'sem custo' : 'preço normal';
+  }
+
+  /* Botão Steam */
+  const btnSteam = card.querySelector('[data-link]');
+  btnSteam.href = getDealUrl(deal.dealID);
+
+  /* Botão copiar link */
+  const btnCopy = card.querySelector('[data-copy]');
+  btnCopy.addEventListener('click', () => {
+    const url = getDealUrl(deal.dealID);
+    navigator.clipboard.writeText(url).then(() => {
+      btnCopy.classList.add('copied');
+      setTimeout(() => btnCopy.classList.remove('copied'), 2000);
+    }).catch(() => {
+      // Fallback para navegadores sem clipboard API
+      const inp = document.createElement('input');
+      inp.value = url;
+      document.body.appendChild(inp);
+      inp.select();
+      document.execCommand('copy');
+      document.body.removeChild(inp);
+      btnCopy.classList.add('copied');
+      setTimeout(() => btnCopy.classList.remove('copied'), 2000);
+    });
+  });
+
+  return card;
+}
+
+/**
+ * Renderiza os deals na grid de jogos.
+ * @param {Array} deals  — lista de ofertas
+ * @param {boolean} append — true para adicionar, false para substituir
+ */
+function renderDeals(deals, append = false) {
+  if (!append) els.gamesGrid.innerHTML = '';
+
+  const fragment = document.createDocumentFragment();
+  deals.forEach(deal => fragment.appendChild(createCard(deal)));
+  els.gamesGrid.appendChild(fragment);
+}
+
+/**
+ * Atualiza os controles de navegação (anterior/próxima página).
+ */
+function updateNavigationControls() {
+  const currentPage = state.page;
+
+  // Sempre mostra controles de navegação
+  els.navControls.style.display = 'flex';
+  els.pageInfo.textContent = `Página ${currentPage + 1}`;
+
+  // Botão anterior
+  els.prevBtn.disabled = currentPage === 0;
+  els.prevBtn.style.opacity = currentPage === 0 ? '0.4' : '1';
+
+  // Botão próxima
+  els.nextBtn.disabled = !state.hasMore;
+  els.nextBtn.style.opacity = state.hasMore ? '1' : '0.4';
+}
+
+/* ============================================================
+   BUSCA DE DADOS
+   ============================================================ */
+
+/**
+ * Busca ofertas na CheapShark API e atualiza a UI.
+ * @param {object} opts
+ * @param {string}  opts.query   — título a pesquisar
+ * @param {boolean} opts.append  — true = carregar mais, false = nova busca
+ * @param {number}  opts.page    — página
+ * @param {string}  opts.sort    — critério de ordenação
+ */
+async function fetchDeals({ query, append = false, page = 0, sort = 'deal' } = {}) {
+  if (state.loading) return;
+
+  state.loading = true;
+  state.lastQuery = { query, page, sort };
+
+  /* Exibe loading na primeira página */
+  if (!append) {
+    showState('loadingState');
+    els.controlsBar.style.display = 'none';
+    els.loadMoreWrapper.style.display = 'none';
+    els.gamesGrid.innerHTML = '';
+  } else {
+    els.loadMoreBtn.textContent = 'Carregando...';
+    els.loadMoreBtn.disabled = true;
+  }
+
+  try {
+    const url = buildUrl(query, page, sort);
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`Erro HTTP ${response.status}`);
+    }
+
+    /* CheapShark retorna o total de deals no header X-Total-Count */
+    const total = parseInt(response.headers.get('X-Total-Count') || '0', 10);
+    state.totalDeals = total;
+
+    const deals = await response.json();
+
+    /* Atualiza o contador no header */
+    if (total > 0) {
+      els.totalDeals.textContent = total.toLocaleString('pt-BR');
+    }
+
+    if (!deals || deals.length === 0) {
+      if (!append) showState('emptyState');
+      else {
+        els.loadMoreWrapper.style.display = 'none';
+      }
+      return;
+    }
+
+    /* Armazena os deals carregados */
+    if (append) {
+      state.deals = [...state.deals, ...deals];
+    } else {
+      state.deals = deals;
+    }
+
+    /* Verifica se há mais páginas */
+    if (deals.length < PAGE_SIZE) {
+      state.hasMore = false;
+    } else {
+      state.hasMore = true;
+    }
+
+    /* Renderiza os cards */
+    renderDeals(deals, append);
+
+    /* Exibe a barra de controles na primeira carga */
+    if (!append) {
+      showState(null); // oculta estados
+      ['heroState', 'loadingState', 'errorState', 'emptyState'].forEach(id => {
+        els[id].style.display = 'none';
+      });
+      els.controlsBar.style.display = '';
+      if (state.query === '') {
+        els.resultsCount.textContent = `${deals.length} destaques`;
+        els.resultsQuery.textContent = 'jogos triple AAA e melhores ofertas';
+      } else {
+        if (total > 0) {
+          els.resultsCount.textContent = `${total.toLocaleString('pt-BR')} resultados`;
+        } else {
+          if (deals.length === PAGE_SIZE) {
+            els.resultsCount.textContent = `Mais de ${deals.length} resultados`;
+          } else {
+            els.resultsCount.textContent = `${deals.length} resultados`;
+          }
+        }
+        els.resultsQuery.textContent = `para "${query}"`;
+      }
+    }
+
+    /* Botão "carregar mais" */
+    const loaded = page * PAGE_SIZE + deals.length;
+    if (total > loaded && deals.length === PAGE_SIZE && !state.query) {
+      els.loadMoreWrapper.style.display = 'flex';
+      els.loadMoreBtn.innerHTML = '<span>CARREGAR MAIS</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>';
+      els.loadMoreBtn.disabled = false;
+    } else {
+      els.loadMoreWrapper.style.display = 'none';
+    }
+
+    /* Atualiza controles de navegação */
+    updateNavigationControls();
+
+  } catch (err) {
+    console.error('[VaultDB] Erro ao buscar dados:', err);
+    if (!append) {
+      showError(`Não foi possível conectar à API. Verifique sua conexão e tente novamente.\n(${err.message})`);
+    } else {
+      els.loadMoreBtn.textContent = 'Erro — Tentar novamente';
+      els.loadMoreBtn.disabled = false;
+    }
+  } finally {
+    state.loading = false;
+  }
+}
+
+/* ============================================================
+   ORDENAÇÃO LOCAL
+   ============================================================ */
+
+/**
+ * Reordena os deals já carregados localmente e re-renderiza.
+ * Para uma nova ordenação completa, faz nova requisição.
+ * @param {string} sort
+ */
+function applySort(sort) {
+  state.sort = sort;
+  state.page = 0; // Reset page when sorting changes
+
+  /* Refaz a busca com a nova ordenação */
+  fetchDeals({ query: state.query, append: false, page: 0, sort });
+}
+
+/* ============================================================
+   INICIALIZAÇÃO DE EVENTOS
+   ============================================================ */
+
+/** Dispara a pesquisa com o valor atual do input. */
+function triggerSearch() {
+  const query = els.searchInput.value.trim();
+  if (!query) return;
+
+  state.query = query;
+  state.page  = 0;
+  state.deals = [];
+
+  fetchDeals({ query, append: false, page: 0, sort: state.sort });
+}
+
+/* -- Input de pesquisa: Enter + debounce -- */
+let debounceTimer = null;
+
+els.searchInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    clearTimeout(debounceTimer);
+    triggerSearch();
+  }
+});
+
+/* Debounce de 500ms para digitação contínua */
+els.searchInput.addEventListener('input', () => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    const query = els.searchInput.value.trim();
+    if (query.length >= 3) triggerSearch();
+  }, 500);
+});
+
+/* -- Botão de pesquisa -- */
+els.searchBtn.addEventListener('click', triggerSearch);
+
+/* -- Tags de pesquisa rápida -- */
+document.querySelectorAll('.quick-tag').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const query = btn.dataset.query;
+    els.searchInput.value = query;
+    state.query = query;
+    state.page  = 0;
+    state.deals = [];
+    fetchDeals({ query, append: false, page: 0, sort: state.sort });
+  });
+});
+
+/* -- Botões de ordenação -- */
+document.querySelectorAll('.sort-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.classList.contains('active')) return;
+
+    document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    applySort(btn.dataset.sort);
+  });
+});
+
+/* -- Botão "Carregar mais" -- */
+els.loadMoreBtn.addEventListener('click', () => {
+  state.page++;
+  fetchDeals({
+    query:  state.query,
+    append: true,
+    page:   state.page,
+    sort:   state.sort,
+  });
+});
+
+/* -- Botões de navegação -- */
+els.prevBtn.addEventListener('click', () => {
+  if (state.page > 0) {
+    state.page--;
+    fetchDeals({
+      query:  state.query,
+      append: false,
+      page:   state.page,
+      sort:   state.sort,
+    });
+  }
+});
+
+els.nextBtn.addEventListener('click', () => {
+  state.page++;
+  fetchDeals({
+    query:  state.query,
+    append: false,
+    page:   state.page,
+    sort:   state.sort,
+  });
+});
+
+/* -- Botão de retry no estado de erro -- */
+els.retryBtn.addEventListener('click', () => {
+  if (state.lastQuery) {
+    fetchDeals({ ...state.lastQuery, append: false });
+  }
+});
+
+/* ============================================================
+   CARGA INICIAL — Busca as melhores ofertas da Steam
+   ============================================================ */
+
+/**
+ * Ao abrir o site sem query, busca as melhores ofertas atuais
+ * da Steam para popular a grade com conteúdo útil.
+ * Prioriza jogos triple AAA (alta avaliação Metacritic).
+ */
+async function loadTopDeals() {
+  try {
+    // Primeiro tenta carregar jogos com alta avaliação Metacritic (triple AAA)
+    const url = `${DEALS_URL}?storeID=${STEAM_STORE_ID}&pageSize=12&sortBy=Metacritic&desc=1&onSale=0`;
+    const response = await fetch(url);
+
+    if (!response.ok) return; // Falha silenciosa na carga inicial
+
+    const total = parseInt(response.headers.get('X-Total-Count') || '0', 10);
+    if (total > 0) {
+      els.totalDeals.textContent = total.toLocaleString('pt-BR');
+    }
+
+    const deals = await response.json();
+
+    if (deals && deals.length > 0) {
+      // Renderiza os deals na tela inicial
+      renderDeals(deals, false);
+
+      // Oculta o estado hero e mostra a grade
+      showState(null);
+      ['heroState', 'loadingState', 'errorState', 'emptyState'].forEach(id => {
+        els[id].style.display = 'none';
+      });
+
+      // Mostra controles com mensagem de destaques
+      els.controlsBar.style.display = '';
+      els.resultsCount.textContent = `${deals.length} destaques`;
+      els.resultsQuery.textContent = 'jogos triple AAA e melhores ofertas';
+
+      // Configura estado para permitir ordenação e navegação
+      state.deals = deals;
+      state.query = ''; // Mantém vazio para indicar que é carga inicial
+      state.page = 0;
+      state.sort = 'rating'; // Define como ordenado por rating inicialmente
+      state.hasMore = true;
+
+      // Mostra controles de navegação se houver mais páginas
+      updateNavigationControls();
+    }
+  } catch {
+    // Ignora erros de rede na carga inicial do contador
+  }
+}
+
+/* ============================================================
+   BOTÃO ATUALIZAR PREÇOS (REFRESH)
+   ============================================================ */
+
+/** Referência ao botão de refresh (só existe depois que uma busca é feita) */
+const refreshBtn = $('refreshBtn');
+
+refreshBtn.addEventListener('click', () => {
+  if (state.loading) return;
+
+  // Animação de spin enquanto atualiza
+  refreshBtn.classList.add('spinning');
+  refreshBtn.disabled = true;
+
+  if (state.query) {
+    fetchDeals({ query: state.query, page: 0, sort: state.sort })
+      .finally(() => {
+        refreshBtn.classList.remove('spinning');
+        refreshBtn.disabled = false;
+      });
+  } else {
+    // Para carga inicial, recarrega os destaques
+    loadTopDeals().finally(() => {
+      refreshBtn.classList.remove('spinning');
+      refreshBtn.disabled = false;
+    });
+  }
+});
+
+/* ============================================================
+   AUTO-REFRESH A CADA 5 MINUTOS
+   Atualiza automaticamente sem o usuário precisar fazer nada.
+   ============================================================ */
+setInterval(() => {
+  // Só atualiza se houver uma busca ativa e não estiver carregando
+  if (state.query && !state.loading) {
+    console.log('[VaultDB] Auto-refresh: atualizando preços...');
+    fetchDeals({ query: state.query, page: 0, sort: state.sort });
+  }
+}, 5 * 60 * 1000); // 5 minutos em milissegundos
+
+/* ============================================================
+   MODAL DE HISTÓRICO DE PREÇOS
+   Usa o endpoint /games?id={gameID} da CheapShark para buscar
+   todas as ofertas já registradas para aquele jogo.
+   ============================================================ */
+
+/** Nomes das lojas mapeados pelo ID da CheapShark */
+const STORE_NAMES = {
+  '1':  'Steam', '2': 'GamersGate', '3': 'GreenManGaming',
+  '6':  'Fanatical', '7': 'WinGameStore', '8': 'GameBillet',
+  '11': 'Humble Store', '13': 'Gog', '15': 'Nuuvem',
+  '21': 'WinGameStore', '23': 'GamesPlanet', '25': 'Gamesload',
+  '27': 'IndieGala', '28': 'Blizzard', '29': 'AllYouPlay',
+  '31': 'DLGamer', '33': 'Fanatical', '35': 'Games Republic',
+};
+
+const modalEls = {
+  overlay:   $('modalOverlay'),
+  title:     $('modalTitle'),
+  img:       $('modalImg'),
+  lowest:    $('modalLowest'),
+  current:   $('modalCurrent'),
+  loading:   $('modalLoading'),
+  body:      $('modalBody'),
+  error:     $('modalError'),
+  tbody:     $('historyTableBody'),
+  closeBtn:  $('modalClose'),
+};
+
+/** Abre o modal e busca o histórico de preços de um jogo. */
+async function openHistoryModal(deal) {
+  // Exibe o modal em modo loading
+  modalEls.overlay.style.display = 'flex';
+  modalEls.title.textContent = deal.title || 'Histórico de Preços';
+  modalEls.img.src = getImageUrl(deal);
+  modalEls.img.alt = deal.title || '';
+  modalEls.lowest.textContent = '—';
+  modalEls.current.textContent = formatPrice(deal.salePrice);
+  modalEls.loading.style.display = 'flex';
+  modalEls.body.style.display = 'none';
+  modalEls.error.style.display = 'none';
+
+  // Bloqueia scroll do body
+  document.body.style.overflow = 'hidden';
+
+  try {
+    // Busca dados completos do jogo pelo gameID
+    const res = await fetch(`${API_BASE}/games?id=${deal.gameID}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const data = await res.json();
+
+    // Preenche menor preço já visto
+    if (data.info && data.info.lowestPrice !== undefined) {
+      const lowest = parseFloat(data.info.lowestPrice);
+      modalEls.lowest.textContent = lowest === 0 ? 'GRÁTIS' : `$${lowest.toFixed(2)}`;
+    }
+
+    // Renderiza a tabela com todas as ofertas históricas
+    if (data.deals && data.deals.length > 0) {
+      modalEls.tbody.innerHTML = '';
+
+      data.deals.forEach(d => {
+        const saleP   = parseFloat(d.price);
+        const retailP = parseFloat(d.retailPrice);
+        const savP    = parseFloat(d.savings);
+        const storeName = STORE_NAMES[d.storeID] || `Loja ${d.storeID}`;
+
+        // Classe da coluna de desconto
+        let savingsClass = 'td-savings-low';
+        if (savP >= 50) savingsClass = 'td-savings-good';
+        else if (savP >= 20) savingsClass = 'td-savings-ok';
+
+        // Classe do preço
+        const priceClass = saleP === 0 ? 'td-price-free' : 'td-price-sale';
+        const priceText  = saleP === 0 ? 'GRÁTIS' : `$${saleP.toFixed(2)}`;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${storeName}</td>
+          <td class="${priceClass}">${priceText}</td>
+          <td style="color:var(--text-muted);text-decoration:line-through;">
+            ${retailP > 0 ? '$' + retailP.toFixed(2) : '—'}
+          </td>
+          <td class="${savingsClass}">
+            ${savP > 0 ? '-' + Math.round(savP) + '%' : '—'}
+          </td>
+          <td style="color:var(--text-secondary);">
+            ${d.metacriticScore > 0 ? d.metacriticScore : '—'}
+          </td>
+          <td>
+            <a class="btn-deal" href="${REDIRECT_URL}${d.dealID}" target="_blank" rel="noopener">
+              Ver oferta ↗
+            </a>
+          </td>
+        `;
+        modalEls.tbody.appendChild(tr);
+      });
+
+      modalEls.loading.style.display = 'none';
+      modalEls.body.style.display = 'block';
+    } else {
+      throw new Error('Sem histórico disponível');
+    }
+
+  } catch (err) {
+    console.error('[VaultDB] Erro ao carregar histórico:', err);
+    modalEls.loading.style.display = 'none';
+    modalEls.error.style.display = 'block';
+  }
+}
+
+/** Fecha o modal de histórico. */
+function closeModal() {
+  modalEls.overlay.style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// Fechar pelo botão ✕
+modalEls.closeBtn.addEventListener('click', closeModal);
+
+// Fechar clicando no overlay (fora do modal)
+modalEls.overlay.addEventListener('click', e => {
+  if (e.target === modalEls.overlay) closeModal();
+});
+
+// Fechar com tecla Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && modalEls.overlay.style.display !== 'none') {
+    closeModal();
+  }
+});
+
+/* ============================================================
+   DELEGAÇÃO DE EVENTO PARA O BOTÃO HISTÓRICO DOS CARDS
+   Como os cards são criados dinamicamente, usamos event
+   delegation no container pai em vez de listeners individuais.
+   ============================================================ */
+els.gamesGrid.addEventListener('click', e => {
+  const histBtn = e.target.closest('[data-history]');
+  if (!histBtn) return;
+
+  const card = histBtn.closest('.game-card');
+  const cards = [...els.gamesGrid.querySelectorAll('.game-card')];
+  const index = cards.indexOf(card);
+
+  if (index !== -1 && state.deals[index]) {
+    openHistoryModal(state.deals[index]);
+  }
+});
+
+/* Inicia contador de ofertas */
+loadTopDeals();

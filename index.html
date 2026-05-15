@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SteamTrack — Rastreador de Preços Steam</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Fontes: Orbitron para display, JetBrains Mono para dados -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=JetBrains+Mono:wght@300;400;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+  <!-- Efeito de scanlines de fundo -->
+  <div class="scanlines" aria-hidden="true"></div>
+  <!-- Grade decorativa de fundo -->
+  <div class="bg-grid" aria-hidden="true"></div>
+
+  <!-- ===== CABEÇALHO ===== -->
+  <header class="site-header">
+    <div class="header-inner">
+
+      <!-- Logo -->
+      <div class="logo">
+        <span class="logo-bracket">[</span>
+        <span class="logo-text">SteamTrack<span class="logo-accent">DB</span></span>
+        <span class="logo-bracket">]</span>
+        <span class="logo-sub">price tracker</span>
+      </div>
+
+      <!-- Barra de pesquisa -->
+      <div class="search-wrapper">
+        <div class="search-box">
+          <!-- Ícone de busca -->
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+          <input
+            type="text"
+            id="searchInput"
+            class="search-input"
+            placeholder="Buscar jogo na Steam..."
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <!-- Botão de pesquisa -->
+          <button id="searchBtn" class="search-btn" aria-label="Pesquisar">
+            <span>BUSCAR</span>
+            <span class="btn-glow"></span>
+          </button>
+        </div>
+        <!-- Sugestões de pesquisa rápida -->
+        <div class="quick-tags">
+          <span class="tag-label">populares:</span>
+          <button class="quick-tag" data-query="cyberpunk 2077">Cyberpunk 2077</button>
+          <button class="quick-tag" data-query="elden ring">Elden Ring</button>
+          <button class="quick-tag" data-query="hades">Hades</button>
+          <button class="quick-tag" data-query="red dead redemption 2">Red Dead Redemption 2</button>
+          <button class="quick-tag" data-query="Subnautica 2">Subnautica 2</button>
+          <button class="quick-tag" data-query="Forza 6">Forza 6</button>
+          <button class="quick-tag" data-query="grand theft auto v">Grand Theft Auto V</button>
+
+        </div>
+      </div>
+
+      <!-- Stats do sistema -->
+      <div class="header-stats">
+        <div class="stat">
+          <span class="stat-value" id="totalDeals">—</span>
+          <span class="stat-label">ofertas ativas</span>
+        </div>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- ===== CONTEÚDO PRINCIPAL ===== -->
+  <main class="main-content">
+
+    <!-- Barra de controles (filtros e ordenação) -->
+    <div class="controls-bar" id="controlsBar" style="display:none;">
+      <div class="results-meta">
+        <span class="results-count" id="resultsCount"></span>
+        <span class="results-query" id="resultsQuery"></span>
+      </div>
+      <div class="sort-controls">
+        <span class="sort-label">ordenar:</span>
+        <button class="sort-btn active" data-sort="rating">Avaliação</button>
+        <button class="sort-btn" data-sort="deal">Melhor Oferta</button>
+        <button class="sort-btn" data-sort="price">Menor Preço</button>
+        <button class="sort-btn" data-sort="savings">Desconto</button>
+        <!-- Botão de atualizar preços ao vivo -->
+        <button class="refresh-btn" id="refreshBtn" title="Atualizar preços agora">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+          <span>Atualizar</span>
+        </button>
+      </div>
+      <!-- Controles de navegação -->
+      <div class="nav-controls" id="navControls" style="display:none;">
+        <button class="nav-btn" id="prevBtn" title="Página anterior" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M15 18l-6-6 6-6"/>
+          </svg>
+          <span>Anterior</span>
+        </button>
+        <span class="page-info" id="pageInfo">Página 1</span>
+        <button class="nav-btn" id="nextBtn" title="Próxima página">
+          <span>Próxima</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 18l6-6-6-6"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    </div>
+
+  <!-- ===== MODAL DE HISTÓRICO DE PREÇOS ===== -->
+  <div class="modal-overlay" id="modalOverlay" style="display:none;" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modalTitle">Histórico de Preços</h2>
+        <button class="modal-close" id="modalClose" aria-label="Fechar">✕</button>
+      </div>
+      <!-- Imagem + info do jogo -->
+      <div class="modal-game-info">
+        <img class="modal-img" id="modalImg" src="" alt="" />
+        <div class="modal-game-meta">
+          <div class="modal-lowest">
+            <span class="modal-lowest-label">menor preço já visto</span>
+            <span class="modal-lowest-val" id="modalLowest">—</span>
+          </div>
+          <div class="modal-current">
+            <span class="modal-current-label">preço atual</span>
+            <span class="modal-current-val" id="modalCurrent">—</span>
+          </div>
+        </div>
+      </div>
+      <!-- Loading do modal -->
+      <div class="modal-loading" id="modalLoading">
+        <div class="loader" style="justify-content:center;">
+          <div class="loader-bar"></div><div class="loader-bar"></div>
+          <div class="loader-bar"></div><div class="loader-bar"></div>
+        </div>
+      </div>
+      <!-- Tabela de ofertas históricas -->
+      <div class="modal-body" id="modalBody" style="display:none;">
+        <h3 class="modal-section-title">Ofertas registradas</h3>
+        <div class="history-table-wrap">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>Loja</th>
+                <th>Preço</th>
+                <th>Original</th>
+                <th>Desconto</th>
+                <th>Avaliação</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="historyTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <!-- Erro do modal -->
+      <div class="modal-error" id="modalError" style="display:none;">
+        <span>⚠ Não foi possível carregar o histórico.</span>
+      </div>
+    </div>
+  </div>
+
+    <!-- Estado: tela inicial (hero) -->
+    <div class="hero-state" id="heroState">
+      <div class="hero-visual">
+        <!-- Ícone central animado -->
+        <div class="hero-icon">
+          <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="10" y="10" width="60" height="60" rx="4" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="4 4"/>
+            <path d="M40 20 L40 60 M20 40 L60 40" stroke="var(--accent)" stroke-width="1.5"/>
+            <circle cx="40" cy="40" r="12" stroke="var(--accent-dim)" stroke-width="1"/>
+            <circle cx="40" cy="40" r="4" fill="var(--accent)"/>
+          </svg>
+        </div>
+        <h2 class="hero-title">Encontre o melhor preço</h2>
+        <p class="hero-sub">Dados em tempo real da CheapShark API • Ofertas da Steam</p>
+        <!-- Métricas de exemplo -->
+        <div class="hero-metrics">
+          <div class="metric"><span class="metric-val">40K+</span><span class="metric-desc">jogos</span></div>
+          <div class="metric-div"></div>
+          <div class="metric"><span class="metric-val">real-time</span><span class="metric-desc">preços</span></div>
+          <div class="metric-div"></div>
+          <div class="metric"><span class="metric-val">free</span><span class="metric-desc">sem cadastro</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Estado: carregando -->
+    <div class="loading-state" id="loadingState" style="display:none;">
+      <div class="loader">
+        <div class="loader-bar"></div>
+        <div class="loader-bar"></div>
+        <div class="loader-bar"></div>
+        <div class="loader-bar"></div>
+      </div>
+      <span class="loading-text">Consultando banco de dados<span class="dots"></span></span>
+    </div>
+
+    <!-- Estado: erro -->
+    <div class="error-state" id="errorState" style="display:none;">
+      <div class="error-icon">⚠</div>
+      <h3 class="error-title">ERRO DE CONEXÃO</h3>
+      <p class="error-msg" id="errorMsg">Não foi possível obter os dados.</p>
+      <button class="retry-btn" id="retryBtn">TENTAR NOVAMENTE</button>
+    </div>
+
+    <!-- Estado: sem resultados -->
+    <div class="empty-state" id="emptyState" style="display:none;">
+      <div class="empty-icon">◈</div>
+      <h3>Nenhum resultado encontrado</h3>
+      <p>Tente outro título ou verifique a ortografia.</p>
+    </div>
+
+    <!-- Grade de cards de jogos -->
+    <div class="games-grid" id="gamesGrid"></div>
+
+    <!-- Botão carregar mais -->
+    <div class="load-more-wrapper" id="loadMoreWrapper" style="display:none;">
+      <button class="load-more-btn" id="loadMoreBtn">
+        <span>CARREGAR MAIS</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+      </button>
+    </div>
+
+  </main>
+
+  <!-- ===== RODAPÉ ===== -->
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span>SteamTrackDB &copy; 2026 — dados via <a href="https://www.cheapshark.com" target="_blank" rel="noopener">CheapShark API</a></span>
+      <span class="footer-note">Não afiliado à Valve Corporation</span>
+    </div>
+  </footer>
+
+  <!-- Template de card (clonado via JS) -->
+  <template id="cardTemplate">
+    <article class="game-card">
+      <!-- Badge de desconto -->
+      <div class="card-badge" data-badge></div>
+      <!-- Imagem do jogo -->
+      <div class="card-img-wrap">
+        <img class="card-img" data-img src="" alt="" loading="lazy" />
+        <div class="card-img-overlay"></div>
+        <!-- Avaliação (Metacritic) -->
+        <div class="card-score" data-score style="display:none;">
+          <span class="score-val" data-score-val></span>
+          <span class="score-label">MC</span>
+        </div>
+      </div>
+      <!-- Corpo do card -->
+      <div class="card-body">
+        <h3 class="card-title" data-title></h3>
+        <!-- Preços -->
+        <div class="card-prices">
+          <span class="price-original" data-original></span>
+          <span class="price-sale" data-sale></span>
+        </div>
+        <!-- Store info -->
+        <div class="card-meta">
+          <span class="meta-store" data-store></span>
+          <span class="meta-divider">·</span>
+          <span class="meta-savings" data-savings></span>
+        </div>
+        <!-- Ações -->
+        <div class="card-actions">
+          <a class="btn-steam" data-link href="#" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.718L.22 15.06C1.429 20.188 6.222 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.606 0 11.979 0z"/></svg>
+            <span>Ver na Steam</span>
+          </a>
+          <!-- Botão histórico de preços -->
+          <button class="btn-history" data-history aria-label="Histórico de preços">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            </svg>
+          </button>
+          <button class="btn-copy" data-copy aria-label="Copiar link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <script src="script.js"></script>
+</body>
+</html>
