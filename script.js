@@ -893,6 +893,9 @@ function triggerSearch() {
   const query = els.searchInput.value.trim();
   if (!query) return;
 
+  // If a game detail view is open, close it and return to the main results area
+  showHomeView();
+
   state.query = query;
   state.page  = 0;
   state.deals = [];
@@ -927,6 +930,8 @@ document.querySelectorAll('.quick-tag').forEach(btn => {
   btn.addEventListener('click', () => {
     const query = btn.dataset.query;
     els.searchInput.value = query;
+    // Close any open game detail view so results show in the main area
+    showHomeView();
     state.query = query;
     state.page  = 0;
     state.deals = [];
