@@ -97,6 +97,7 @@
           </div>
           <!-- Cotação atual exibida abaixo das pills -->
           <span class="currency-rate" id="currencyRate"></span>
+          <span class="currency-disclaimer" id="currencyDisclaimer" style="display:none;">estimativa — Steam usa preços regionais</span>
         </div>
 
         <!-- Stats do sistema -->
@@ -311,10 +312,11 @@
           <span class="price-sale" data-sale></span>
         </div>
         <!-- Preço convertido na moeda selecionada (oculto quando USD) -->
-        <div class="price-converted" data-converted-wrap style="display:none;">
+        <div class="price-converted" data-converted-wrap style="display:none;" title="Estimativa de conversão — A Steam pode cobrar preços regionais diferentes">
           <span class="converted-flag" data-converted-flag></span>
           <span class="converted-val" data-converted-val></span>
           <span class="converted-label" data-converted-label></span>
+          <span class="converted-info" title="Estimativa baseada na cotação do dólar. A Steam pode cobrar preços locais diferentes.">ⓘ</span>
         </div>
         <!-- Store info -->
         <div class="card-meta">

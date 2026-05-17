@@ -32,146 +32,178 @@ const REDIRECT_URL = 'https://www.cheapshark.com/redirect?dealID=';
    ============================================================ */
 
 const CURRENCIES = {
-  USD: { flag: '🇺🇸', symbol: '$',  locale: 'en-US' },
-  BRL: { flag: '🇧🇷', symbol: 'R$', locale: 'pt-BR' },
-  EUR: { flag: '🇪🇺', symbol: '€',  locale: 'de-DE' },
-  GBP: { flag: '🇬🇧', symbol: '£',  locale: 'en-GB' },
+  USD: { flag: '🇺🇸', symbol: '$',  locale: 'en-US', steamCC: 'us' },
+  BRL: { flag: '🇧🇷', symbol: 'R$', locale: 'pt-BR', steamCC: 'br' },
+  EUR: { flag: '🇪🇺', symbol: '€',  locale: 'de-DE', steamCC: 'de' },
+  GBP: { flag: '🇬🇧', symbol: '£',  locale: 'en-GB', steamCC: 'gb' },
 };
 
 const fx = {
   current: 'USD',
   rates:   { USD: 1 },
   loading: false,
+  steamPrices: {}, // cache: "appid_cc" -> { final, final_formatted } | null
 };
 
 /**
- * Busca a cotação real de USD para a moeda alvo.
- * Tenta 3 APIs públicas gratuitas em sequência.
- * Se todas falharem usa valores de fallback aproximados.
+ * Busca o preço regional real da Steam via /api/steam-price (Vercel Edge Function).
+ * Essa rota chama a Steam server-side, sem bloqueio de CORS.
+ * Retorna { final, final_formatted } ou null.
+ */
+async function fetchSteamPrice(steamAppID, currency) {
+  if (!steamAppID || currency === 'USD') return null;
+
+  const cc = CURRENCIES[currency]?.steamCC;
+  if (!cc) return null;
+
+  const cacheKey = `${steamAppID}_${cc}`;
+  if (Object.prototype.hasOwnProperty.call(fx.steamPrices, cacheKey)) {
+    return fx.steamPrices[cacheKey];
+  }
+
+  try {
+    const res = await fetch(`/api/steam-price?appid=${steamAppID}&cc=${cc}`);
+    if (!res.ok) { fx.steamPrices[cacheKey] = null; return null; }
+    const data = await res.json();
+    const price = data?.price ?? null;
+    fx.steamPrices[cacheKey] = price;
+    return price;
+  } catch {
+    fx.steamPrices[cacheKey] = null;
+    return null;
+  }
+}
+
+/**
+ * Busca cotação de câmbio USD → moeda. Tenta 2 APIs, depois fallback fixo.
+ * Usado apenas quando não há steamAppID ou a Steam não retorna preço.
  */
 async function fetchRate(currency) {
   if (currency === 'USD') return 1;
-  if (fx.rates[currency]) return fx.rates[currency]; // cache — não rebusca
+  if (Object.prototype.hasOwnProperty.call(fx.rates, currency)) return fx.rates[currency];
 
-  const FALLBACK = { BRL: 5.72, EUR: 0.92, GBP: 0.79 };
+  const FALLBACK = { BRL: 5.76, EUR: 0.91, GBP: 0.78 };
 
-  // API 1: open.er-api.com — simples, sem chave, muito confiável
   try {
-    const res = await fetch('https://open.er-api.com/v6/latest/USD',
-      { signal: AbortSignal.timeout(5000) });
+    const res = await fetch('https://open.er-api.com/v6/latest/USD');
     if (res.ok) {
       const data = await res.json();
       if (data.result === 'success' && data.rates?.[currency]) {
-        const rate = data.rates[currency];
-        fx.rates[currency] = rate;
-        console.log(`[FX] open.er-api ✓  1 USD = ${rate} ${currency}`);
-        return rate;
+        fx.rates[currency] = data.rates[currency];
+        return fx.rates[currency];
       }
     }
-  } catch { /* próxima */ }
+  } catch { /* tenta próxima */ }
 
-  // API 2: Frankfurter (Banco Central Europeu)
   try {
-    const res = await fetch(
-      `https://api.frankfurter.app/latest?from=USD&to=${currency}`,
-      { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`https://api.frankfurter.app/latest?from=USD&to=${currency}`);
     if (res.ok) {
       const data = await res.json();
       if (data.rates?.[currency]) {
-        const rate = data.rates[currency];
-        fx.rates[currency] = rate;
-        console.log(`[FX] frankfurter ✓  1 USD = ${rate} ${currency}`);
-        return rate;
-      }
-    }
-  } catch { /* próxima */ }
-
-  // API 3: ExchangeRate.host
-  try {
-    const res = await fetch(
-      `https://api.exchangerate.host/latest?base=USD&symbols=${currency}`,
-      { signal: AbortSignal.timeout(5000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.rates?.[currency]) {
-        const rate = data.rates[currency];
-        fx.rates[currency] = rate;
-        console.log(`[FX] exchangerate.host ✓  1 USD = ${rate} ${currency}`);
-        return rate;
+        fx.rates[currency] = data.rates[currency];
+        return fx.rates[currency];
       }
     }
   } catch { /* fallback */ }
 
-  // Fallback fixo com aviso no console
-  const rate = FALLBACK[currency] || 1;
-  fx.rates[currency] = rate;
-  console.warn(`[FX] Todas as APIs falharam. Fallback: 1 USD ≈ ${rate} ${currency}`);
-  return rate;
-}
-
-/** Recalcula e exibe o preço convertido em todos os cards visíveis. */
-function updateAllCardPrices() {
-  const isUSD = fx.current === 'USD';
-  const { flag, symbol, locale } = CURRENCIES[fx.current];
-  const rate = fx.rates[fx.current] || 1;
-
-  document.querySelectorAll('.game-card').forEach(card => {
-    const wrap = card.querySelector('[data-converted-wrap]');
-    if (!wrap) return;
-
-    const usdSale = parseFloat(card.dataset.usdSale || '0');
-
-    if (isUSD || isNaN(usdSale) || usdSale === 0) {
-      wrap.style.display = 'none';
-      return;
-    }
-
-    const converted = usdSale * rate;
-    const formatted = `${symbol} ${converted.toLocaleString(locale, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`;
-
-    card.querySelector('[data-converted-flag]').textContent  = flag;
-    card.querySelector('[data-converted-val]').textContent   = formatted;
-    card.querySelector('[data-converted-label]').textContent = fx.current;
-    wrap.style.display = 'flex';
-  });
+  fx.rates[currency] = FALLBACK[currency] || 1;
+  return fx.rates[currency];
 }
 
 /**
- * Atualiza preços exibidos na página de detalhe do jogo (gameView).
+ * Atualiza o bloco de preço convertido de um card.
+ * Prioridade: preço real Steam → câmbio estimado.
  */
-function updateGameViewPrices() {
+async function updateCardPrice(card, currency) {
+  const wrap = card.querySelector('[data-converted-wrap]');
+  if (!wrap) return;
+
+  if (currency === 'USD') { wrap.style.display = 'none'; return; }
+
+  const usdSale = parseFloat(card.dataset.usdSale || '0');
+  if (!usdSale) { wrap.style.display = 'none'; return; }
+
+  const { flag, symbol, locale } = CURRENCIES[currency];
+  const steamAppID = card.dataset.steamAppId;
+
+  // Mostra loading
+  card.querySelector('[data-converted-flag]').textContent  = flag;
+  card.querySelector('[data-converted-val]').textContent   = '...';
+  card.querySelector('[data-converted-label]').textContent = currency;
+  wrap.style.display = 'flex';
+  wrap.dataset.source = 'loading';
+
+  // Tenta preço real da Steam via proxy
+  if (steamAppID) {
+    const steamPrice = await fetchSteamPrice(steamAppID, currency);
+    if (steamPrice) {
+      card.querySelector('[data-converted-flag]').textContent  = flag;
+      card.querySelector('[data-converted-val]').textContent   = steamPrice.final_formatted;
+      card.querySelector('[data-converted-label]').textContent = currency;
+      wrap.dataset.source = 'steam';
+      wrap.title = `Preço oficial da Steam (${currency})`;
+      return;
+    }
+  }
+
+  // Fallback: câmbio estimado
+  const rate = await fetchRate(currency);
+  const converted = usdSale * rate;
+  card.querySelector('[data-converted-flag]').textContent  = flag;
+  card.querySelector('[data-converted-val]').textContent   = `≈ ${symbol} ${converted.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  card.querySelector('[data-converted-label]').textContent = currency;
+  wrap.dataset.source = 'fx';
+  wrap.title = `Estimativa de câmbio (1 USD = ${rate.toFixed(2)} ${currency}). Preço regional da Steam indisponível.`;
+}
+
+/** Atualiza todos os cards visíveis. */
+function updateAllCardPrices() {
+  const currency = fx.current;
+  document.querySelectorAll('.game-card').forEach(card => {
+    const wrap = card.querySelector('[data-converted-wrap]');
+    if (currency === 'USD') {
+      if (wrap) wrap.style.display = 'none';
+    } else {
+      updateCardPrice(card, currency);
+    }
+  });
+}
+
+/** Atualiza o preço na página de detalhe do jogo. */
+async function updateGameViewPrices() {
   if (!els.gameView || !state.currentGameDeal) return;
 
-  const sale = parseFloat(state.currentGameDeal.salePrice || '0');
+  const currency = fx.current;
+  const deal = state.currentGameDeal;
+  const sale = parseFloat(deal.salePrice || '0');
   const convEl = els.gameView.querySelector('[data-game-converted]');
   const saleEl = els.gameView.querySelector('[data-game-sale]');
 
-  if (!saleEl) return;
+  if (saleEl) saleEl.textContent = formatPrice(sale);
+  if (!convEl) return;
 
-  // Atualiza o preço exibido em USD (sempre mostrar)
-  saleEl.textContent = formatPrice(sale);
+  if (currency === 'USD' || sale === 0) { convEl.style.display = 'none'; return; }
 
-  // Se for USD ou preço zero, esconde convertido
-  if (fx.current === 'USD' || sale === 0) {
-    if (convEl) convEl.style.display = 'none';
-    return;
+  const { flag, symbol, locale } = CURRENCIES[currency];
+  convEl.textContent = `${flag} ...`;
+  convEl.style.display = '';
+
+  if (deal.steamAppID) {
+    const steamPrice = await fetchSteamPrice(deal.steamAppID, currency);
+    if (steamPrice) {
+      convEl.textContent = `${flag} ${steamPrice.final_formatted}`;
+      convEl.title = `Preço oficial da Steam (${currency})`;
+      return;
+    }
   }
 
-  const rate = fx.rates[fx.current] || 1;
+  const rate = await fetchRate(currency);
   const converted = sale * rate;
-  const { locale, symbol, flag } = CURRENCIES[fx.current];
-  const formatted = `${flag} ${symbol} ${converted.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-  if (convEl) {
-    convEl.textContent = formatted;
-    convEl.style.display = '';
-  }
+  convEl.textContent = `${flag} ≈ ${symbol} ${converted.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  convEl.title = `Estimativa de câmbio (1 USD = ${rate.toFixed(2)} ${currency})`;
 }
 
-/** Troca a moeda ativa, busca a cotação e atualiza todos os cards. */
+/** Troca a moeda ativa e atualiza todos os preços. */
 async function switchCurrency(currency) {
   if (fx.loading) return;
   fx.loading = true;
@@ -191,23 +223,21 @@ async function switchCurrency(currency) {
     return;
   }
 
-  rateEl.textContent = 'buscando cotação...';
-  rateEl.classList.remove('flash');
+  rateEl.textContent = 'buscando preços...';
 
   const rate = await fetchRate(currency);
+  rateEl.textContent = `câmbio ref: 1 USD = ${rate.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ${currency} · preço Steam quando disponível`;
 
-  rateEl.textContent = `1 USD = ${rate.toLocaleString('pt-BR', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  })} ${currency}`;
-
+  rateEl.classList.remove('flash');
+  void rateEl.offsetWidth;
   rateEl.classList.add('flash');
-  setTimeout(() => rateEl.classList.remove('flash'), 1500);
+  setTimeout(() => rateEl.classList.remove('flash'), 2000);
 
   updateAllCardPrices();
   updateGameViewPrices();
   fx.loading = false;
 }
+
 
 // Eventos dos botões de moeda
 document.querySelectorAll('.currency-pill').forEach(btn => {
@@ -671,22 +701,13 @@ function createCard(deal) {
   const btnSteam = card.querySelector('[data-link]');
   btnSteam.href = getDealUrl(deal.dealID);
 
-  /* Guarda o preço USD no dataset do card para a conversão de moeda */
+  /* Guarda dados no dataset para conversão de moeda */
   card.dataset.usdSale = salePrice;
+  if (deal.steamAppID) card.dataset.steamAppId = deal.steamAppID;
 
-  /* Preenche o bloco de preço convertido se a moeda não for USD */
-  const convertedWrap = card.querySelector('[data-converted-wrap]');
-  if (convertedWrap && fx.current !== 'USD' && !isFree && salePrice > 0) {
-    const rate = fx.rates[fx.current] || 1;
-    const converted = salePrice * rate;
-    const { locale, symbol, flag } = CURRENCIES[fx.current];
-    const formatted = `${symbol} ${converted.toLocaleString(locale, {
-      minimumFractionDigits: 2, maximumFractionDigits: 2,
-    })}`;
-    card.querySelector('[data-converted-flag]').textContent  = CURRENCIES[fx.current].flag;
-    card.querySelector('[data-converted-val]').textContent   = formatted;
-    card.querySelector('[data-converted-label]').textContent = fx.current;
-    convertedWrap.style.display = 'flex';
+  /* Dispara busca de preço regional (async) */
+  if (fx.current !== 'USD' && !isFree && salePrice > 0) {
+    updateCardPrice(card, fx.current);
   }
 
   /* Botão copiar link */

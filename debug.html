@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head><title>Price Debug</title>
+<style>
+body { background:#111; color:#0f0; font-family:monospace; padding:20px; }
+button { background:#1a3a1a; color:#0f0; border:1px solid #0f0; padding:8px 16px; cursor:pointer; margin:4px; }
+pre { background:#0a1a0a; padding:12px; border:1px solid #333; white-space:pre-wrap; font-size:12px; }
+.err { color:#f55; }
+.ok  { color:#5f5; }
+.warn { color:#ff5; }
+</style>
+</head>
+<body>
+<h2>🔍 Steam Price Debug</h2>
+
+<button onclick="debugCards()">1. Ver steamAppID de todos os cards</button>
+<button onclick="debugAPI('1174180','br')">2. API RDR2 → BRL</button>
+<button onclick="findSubnautica()">3. Buscar Subnautica 2 na CheapShark</button>
+<button onclick="debugAllCards()">4. Testar /api/steam-price de cada card</button>
+
+<pre id="out"></pre>
+
+<script>
+const log = (msg, cls='') => {
+  const el = document.getElementById('out');
+  el.innerHTML += `<span class="${cls}">${msg}</span>\n`;
+};
+
+// 1. Mostra steamAppID de todos os cards na página principal
+function debugCards() {
+  log('\n=== steamAppID nos cards ===');
+  const cards = document.querySelectorAll('.game-card');
+  if (!cards.length) { log('Nenhum card encontrado. Abra este debug na mesma aba do site, ou...', 'warn'); }
+  cards.forEach(c => {
+    log(`  ${c.dataset.steamAppId || '(sem ID)'} — ${c.querySelector('.card-title')?.textContent || '?'}`);
+  });
+
+  // Também tenta via window.opener ou window.parent
+  const win = window.opener || window.parent;
+  if (win && win !== window) {
+    try {
+      const cards2 = win.document.querySelectorAll('.game-card');
+      log(`\nCards no parent/opener: ${cards2.length}`);
+      cards2.forEach(c => {
+        const wrap = c.querySelector('[data-converted-wrap]');
+        log(`  appid=${c.dataset.steamAppId || 'N/A'} source=${wrap?.dataset?.source || '?'} val="${c.querySelector('[data-converted-val]')?.textContent}" — ${c.querySelector('.card-title')?.textContent || '?'}`);
+      });
+    } catch(e) { log('Cross-origin block: ' + e.message, 'err'); }
+  }
+}
+
+// 2. Chama /api/steam-price direto
+async function debugAPI(appid, cc) {
+  log(`\n=== /api/steam-price?appid=${appid}&cc=${cc} ===`);
+  try {
+    const res = await fetch(`/api/steam-price?appid=${appid}&cc=${cc}`);
+    log(`Status: ${res.status} | Cache: ${res.headers.get('X-Cache') || 'n/a'}`);
+    const data = await res.json();
+    log(JSON.stringify(data, null, 2), data?.price ? 'ok' : 'warn');
+  } catch(e) {
+    log('ERRO: ' + e.message, 'err');
+  }
+}
+
+// 3. Busca Subnautica 2 na CheapShark para ver o steamAppID
+async function findSubnautica() {
+  log('\n=== CheapShark: buscando Subnautica 2 ===');
+  try {
+    const res = await fetch('https://www.cheapshark.com/api/1.0/deals?storeID=1&title=subnautica+2&pageSize=5');
+    const deals = await res.json();
+    log(`Resultados: ${deals.length}`);
+    deals.forEach(d => {
+      log(`  title="${d.title}" | steamAppID=${d.steamAppID || 'N/A'} | salePrice=$${d.salePrice} | normalPrice=$${d.normalPrice}`);
+    });
+
+    // Testa o steamAppID encontrado
+    for (const d of deals) {
+      if (d.steamAppID) {
+        log(`\nTestando steamAppID ${d.steamAppID} na nossa API:`);
+        await debugAPI(d.steamAppID, 'br');
+      }
+    }
+  } catch(e) {
+    log('ERRO: ' + e.message, 'err');
+  }
+}
+
+// 4. Testa /api/steam-price para todos os IDs visíveis nos cards
+async function debugAllCards() {
+  log('\n=== Testando /api/steam-price para cada card ===');
+  
+  // Tenta pegar cards do parent (se aberto como popup do site)
+  let cards = [];
+  try {
+    const win = window.opener || (window.parent !== window ? window.parent : null);
+    if (win) cards = [...win.document.querySelectorAll('.game-card')];
+  } catch(e) {}
+  if (!cards.length) cards = [...document.querySelectorAll('.game-card')];
+  
+  if (!cards.length) {
+    log('Abra este arquivo a partir do site (window.open) ou cole a URL do site abaixo:', 'warn');
+    return;
+  }
+
+  for (const card of cards) {
+    const appid = card.dataset.steamAppId;
+    const title = card.querySelector('.card-title')?.textContent || '?';
+    const convertedVal = card.querySelector('[data-converted-val]')?.textContent || '?';
+    const source = card.querySelector('[data-converted-wrap]')?.dataset?.source || '?';
+
+    if (!appid) {
+      log(`  ⚠ SEM steamAppID: "${title}" → mostrando: ${convertedVal}`, 'warn');
+      continue;
+    }
+
+    const res = await fetch(`/api/steam-price?appid=${appid}&cc=br`);
+    const data = await res.json();
+    const steamPrice = data?.price?.final_formatted || 'N/A';
+    const match = steamPrice === convertedVal ? '✓' : '✗';
+    const cls = match === '✓' ? 'ok' : 'err';
+    log(`  ${match} "${title}" | appid=${appid} | site=${convertedVal} | steam=${steamPrice} | source=${source}`, cls);
+  }
+}
+</script>
+</body>
+</html>
