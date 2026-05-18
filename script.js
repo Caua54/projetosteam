@@ -208,6 +208,9 @@ async function switchCurrency(currency) {
   if (fx.loading) return;
   fx.loading = true;
 
+  // Limpa cache de preços Steam para forçar rebusca (evita null cacheado de falhas anteriores)
+  fx.steamPrices = {};
+
   document.querySelectorAll('.currency-pill').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.currency === currency);
   });
